@@ -42,6 +42,9 @@ from .json import Json
 from .constants import VERSION as BOTVERSION
 from .constants import DISCORD_MSG_CHAR_LIMIT, AUDIO_CACHE_PATH
 
+from typing import Optional
+
+
 load_opus_lib()
 
 log = logging.getLogger(__name__)
@@ -413,7 +416,7 @@ class MusicBot(discord.Client):
         # I hope I don't have to set the channel here
         # instead of waiting for the event to update it
 
-    def get_player_in(self, guild:discord.Guild) -> MusicPlayer:
+    def get_player_in(self, guild:discord.Guild) -> Optional[MusicPlayer]:
         return self.players.get(guild.id)
 
     async def get_player(self, channel, create=False, *, deserialize=False) -> MusicPlayer:
@@ -1116,7 +1119,7 @@ class MusicBot(discord.Client):
         """Provides a basic template for embeds"""
         e = discord.Embed()
         e.colour = 7506394
-        e.set_footer(text='Just-Some-Bots/MusicBot ({})'.format(BOTVERSION), icon_url='https://i.imgur.com/gFHBoZA.png')
+        e.set_footer(text=self.config.footer_text, icon_url='https://i.imgur.com/gFHBoZA.png')
         e.set_author(name=self.user.name, url='https://github.com/Just-Some-Bots/MusicBot', icon_url=self.user.avatar_url)
         return e
 
@@ -1303,7 +1306,7 @@ class MusicBot(discord.Client):
             )
         return True
 
-    async def cmd_play(self, message, player, channel, author, permissions, leftover_args, song_url):
+    async def cmd_play(self, message, _player, channel, author, permissions, leftover_args, song_url):
         """
         Usage:
             {command_prefix}play song_link
@@ -1317,6 +1320,28 @@ class MusicBot(discord.Client):
         it will use the metadata (e.g song name and artist) to find a YouTube
         equivalent of the song. Streaming from Spotify is not possible.
         """
+
+        if _player:
+            player = _player
+        elif permissions.summonplay:
+            vc = author.voice.channel if author.voice else None
+            response = await self.cmd_summon(channel, channel.guild, author, vc) # @TheerapakG: As far as I know voice_channel param is unused
+            if self.config.embeds:
+                content = self._gen_embed()
+                content.title = 'summon'
+                content.description = response.content
+            else:
+                content = response.content
+            await self.safe_send_message(
+                channel, content,
+                expire_in=response.delete_after if self.config.delete_messages else 0
+            )
+            player = self.get_player_in(channel.guild)
+
+        if not player:
+            raise exceptions.CommandError(
+                'The bot is not in a voice channel.  '
+                'Use %ssummon to summon it to your voice channel.' % self.config.command_prefix)
 
         song_url = song_url.strip('<>')
 
@@ -1676,7 +1701,7 @@ class MusicBot(discord.Client):
         return Response(self.str.get('cmd-play-playlist-reply-secs', "Enqueued {0} songs to be played in {1} seconds").format(
             songs_added, fixg(ttime, 1)), delete_after=30)
 
-    async def cmd_stream(self, player, channel, author, permissions, song_url):
+    async def cmd_stream(self, _player, channel, author, permissions, song_url):
         """
         Usage:
             {command_prefix}stream song_link
@@ -1686,6 +1711,28 @@ class MusicBot(discord.Client):
         media without predownloading it.  Note: FFmpeg is notoriously bad at handling
         streams, especially on poor connections.  You have been warned.
         """
+
+        if _player:
+            player = _player
+        elif permissions.summonplay:
+            vc = author.voice.channel if author.voice else None
+            response = await self.cmd_summon(channel, channel.guild, author, vc) # @TheerapakG: As far as I know voice_channel param is unused
+            if self.config.embeds:
+                content = self._gen_embed()
+                content.title = 'summon'
+                content.description = response.content
+            else:
+                content = response.content
+            await self.safe_send_message(
+                channel, content,
+                expire_in=response.delete_after if self.config.delete_messages else 0
+            )
+            player = self.get_player_in(channel.guild)
+
+        if not player:
+            raise exceptions.CommandError(
+                'The bot is not in a voice channel.  '
+                'Use %ssummon to summon it to your voice channel.' % self.config.command_prefix)
 
         song_url = song_url.strip('<>')
 
@@ -1918,6 +1965,8 @@ class MusicBot(discord.Client):
         Call the bot to the summoner's voice channel.
         """
 
+        # @TheerapakG: Maybe summon should have async lock?
+
         if not author.voice:
             raise exceptions.CommandError(self.str.get('cmd-summon-novc', 'You are not connected to voice. Try joining a voice channel!'))
 
@@ -2104,16 +2153,17 @@ class MusicBot(discord.Client):
                       "You might want to restart the bot if it doesn't start working.")
         
         current_entry = player.current_entry
-
-        if (param.lower() in ['force', 'f']) or self.config.legacy_skip:
-            if permissions.instaskip \
-                or (self.config.allow_author_skip and author == player.current_entry.meta.get('author', None)):
-
-                player.skip()  # TODO: check autopause stuff here
-                await self._manual_delete_check(message)
-                return Response(self.str.get('cmd-skip-force', 'Force skipped `{}`.').format(current_entry.title), reply=True, delete_after=30)
-            else:
-                raise exceptions.PermissionsError(self.str.get('cmd-skip-force-noperms', 'You do not have permission to force skip.'), expire_in=30)
+        
+        permission_force_skip = permissions.instaskip or (self.config.allow_author_skip and author == player.current_entry.meta.get('author', None))
+        force_skip = param.lower() in ['force', 'f']
+        
+        if permission_force_skip and (force_skip or self.config.legacy_skip):
+            player.skip()  # TODO: check autopause stuff here
+            await self._manual_delete_check(message)
+            return Response(self.str.get('cmd-skip-force', 'Force skipped `{}`.').format(current_entry.title), reply=True, delete_after=30)
+            
+        if not permission_force_skip and force_skip:
+            raise exceptions.PermissionsError(self.str.get('cmd-skip-force-noperms', 'You do not have permission to force skip.'), expire_in=30)
 
         # TODO: ignore person if they're deaf or take them out of the list or something?
         # Currently is recounted if they vote, deafen, then vote
