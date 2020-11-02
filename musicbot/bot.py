@@ -28,7 +28,7 @@ from . import exceptions
 from . import downloader
 
 from .playlist import Playlist
-from .player import MusicPlayer
+from .player import MusicPlayer, MusicPlayerState
 from .entry import StreamPlaylistEntry
 from .opus_loader import load_opus_lib
 from .config import Config, ConfigDefaults
@@ -70,6 +70,9 @@ class MusicBot(discord.Client):
         self.init_ok = False
         self.cached_app_info = None
         self.last_status = None
+
+        self.lastStoppedTime = None
+        self.current_channel = None
 
         self.config = Config(config_file)
         
@@ -1892,6 +1895,21 @@ class MusicBot(discord.Client):
                 delete_after=30
             )
 
+    async def disconnect_timer(self, guild):
+        player = await self.get_player(self.current_channel)
+        if(player.state == MusicPlayerState.STOPPED or player.state == MusicPlayerState.PAUSED or player.state == MusicPlayerState.DEAD):
+            if(self.lastStoppedTime == None):
+                self.lastStoppedTime = time.time()
+            DISCONNECT_TIME = 60*15
+            if(time.time() - self.lastStoppedTime > DISCONNECT_TIME):
+                print("disconnect")
+                await self.disconnect_voice_client(guild)
+                return
+        else:
+            self.lastStoppedTime = None
+        await asyncio.sleep(30)
+        await self.disconnect_timer(guild)
+
     async def cmd_summon(self, channel, guild, author, voice_channel):
         """
         Usage:
@@ -1906,6 +1924,7 @@ class MusicBot(discord.Client):
         voice_client = self.voice_client_in(guild)
         if voice_client and guild == author.voice.channel.guild:
             await voice_client.move_to(author.voice.channel)
+            self.current_channel = author.voice.channel
         else:
             # move to _verify_vc_perms?
             chperms = author.voice.channel.permissions_for(guild.me)
@@ -1931,6 +1950,11 @@ class MusicBot(discord.Client):
 
             if self.config.auto_playlist:
                 await self.on_player_finished_playing(player)
+
+            self.lastStoppedTime = None
+            self.current_channel = author.voice.channel
+            loop = asyncio.get_event_loop()
+            loop.create_task(self.disconnect_timer(guild))
 
         log.info("Joining {0.guild.name}/{0.name}".format(author.voice.channel))
 
